@@ -16,29 +16,16 @@ INDEX_NAME = 'movies'
 
 def get_db_connection_and_cursor(db_path):
     conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
     return conn, conn.cursor()
 
 
 def get_initial_movies_list(cursor):
-    movies = []
     cursor.execute("""
-                SELECT id, imdb_rating, genre, title, plot, director, writer, writers
-                FROM movies""")
-    for row in cursor.fetchall():
-        movies.append(
-            {
-                'id': row[0],
-                'imdb_rating': row[1],
-                'genre': row[2],
-                'title': row[3],
-                'description': row[4],
-                'director': row[5],
-                'writer': row[6],
-                'writers': row[7],
-            }
-        )
+        SELECT id, imdb_rating, genre, title, plot as description, director, writer, writers
+        FROM movies""")
 
-    return movies
+    return [dict(movie) for movie in cursor.fetchall()]
 
 
 def edit_writers_in_movie(cursor, movie):
@@ -62,21 +49,21 @@ def edit_writers_in_movie(cursor, movie):
     del movie['writer']
 
 
-def add_actors_to_movies(cursor, movie):
+def add_actors_to_movie(cursor, movie):
     cursor.execute("""
-                SELECT a.id, a.name
-                FROM actors a
-                INNER JOIN movie_actors m_a ON a.id = m_a.actor_id
-                WHERE m_a.movie_id=?
-                """, (movie['id'],))
-    movie['actors'] = [{'id': row[0], 'name': row[1]} for row in cursor.fetchall()]
+        SELECT a.id, a.name
+        FROM actors a
+        INNER JOIN movie_actors m_a ON a.id = m_a.actor_id
+        WHERE m_a.movie_id=?
+        """, (movie['id'],))
+    movie['actors'] = [dict(actor) for actor in cursor.fetchall()]
     movie['actors_names'] = ', '.join([actor['name'] for actor in movie['actors']])
 
 
 def process_movies(cursor, movies):
     for movie in movies:
         edit_writers_in_movie(cursor, movie)
-        add_actors_to_movies(cursor, movie)
+        add_actors_to_movie(cursor, movie)
         try:
             movie['imdb_rating'] = float(movie['imdb_rating'])
         except ValueError:
@@ -85,11 +72,11 @@ def process_movies(cursor, movies):
     return movies
 
 
-def create_index(client):
-    with open(INDEX_SCHEMA_PATH, 'r') as f:
+def create_index(client, index_schema_path, index_name):
+    with open(index_schema_path, 'r') as f:
         index_schema = f.read()
 
-    client.indices.create(index=INDEX_NAME, body=index_schema, ignore=400)
+    client.indices.create(index=index_name, body=index_schema, ignore=400)
 
 
 def generate_actions(movies):
@@ -106,8 +93,8 @@ def main():
     conn.close()
 
     client = Elasticsearch()
-    print('Creating "movies" index if it does not exist...')
-    create_index(client)
+    print(f'Creating "{INDEX_NAME}" index if it does not exist...')
+    create_index(client, INDEX_SCHEMA_PATH, INDEX_NAME)
     print("Indexing documents...")
     result = bulk(client, index=INDEX_NAME, actions=generate_actions(processed_movies))
     print(f'Successfully indexed {result[0]} documents, {len(result[1])} errors')
