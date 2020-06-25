@@ -14,21 +14,7 @@ INDEX_SCHEMA_PATH = BASE_DIRECTORY.joinpath(INDEX_SCHEMA_FILENAME)
 INDEX_NAME = 'movies'
 
 
-def get_db_connection_and_cursor(db_path):
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    return conn, conn.cursor()
-
-
-def get_initial_movies_list(cursor):
-    cursor.execute("""
-        SELECT id, imdb_rating, genre, title, plot as description, director, writer, writers
-        FROM movies""")
-
-    return [dict(movie) for movie in cursor.fetchall()]
-
-
-def edit_writers_in_movie(cursor, movie):
+def edit_writers_in_movie(movie, all_writers):
     writers = []
 
     if movie['writer']:
@@ -40,8 +26,7 @@ def edit_writers_in_movie(cursor, movie):
     if writers:
         unique_writers = list({writer['id']: writer for writer in writers}.values())
         for writer in unique_writers:
-            cursor.execute('SELECT name FROM writers WHERE id=?', (writer['id'],))
-            writer['name'] = cursor.fetchone()[0]
+            writer['name'] = next(w['name'] for w in all_writers if w['id'] == writer['id'])
 
         movie['writers'] = unique_writers
         movie['writers_names'] = ', '.join([writer['name'] for writer in unique_writers])
@@ -49,34 +34,10 @@ def edit_writers_in_movie(cursor, movie):
     del movie['writer']
 
 
-def add_actors_to_movie(cursor, movie):
-    cursor.execute("""
-        SELECT a.id, a.name
-        FROM actors a
-        INNER JOIN movie_actors m_a ON a.id = m_a.actor_id
-        WHERE m_a.movie_id=?
-        """, (movie['id'],))
-    movie['actors'] = [dict(actor) for actor in cursor.fetchall()]
+def add_actors_to_movie(movie, actors):
+    movie['actors'] = [{'id': actor['id'], 'name': actor['name']}
+                       for actor in actors if actor['movie_id'] == movie['id']]
     movie['actors_names'] = ', '.join([actor['name'] for actor in movie['actors']])
-
-
-def process_movies(cursor, movies):
-    for movie in movies:
-        edit_writers_in_movie(cursor, movie)
-        add_actors_to_movie(cursor, movie)
-        try:
-            movie['imdb_rating'] = float(movie['imdb_rating'])
-        except ValueError:
-            del movie['imdb_rating']
-
-    return movies
-
-
-def create_index(client, index_schema_path, index_name):
-    with open(index_schema_path, 'r') as f:
-        index_schema = f.read()
-
-    client.indices.create(index=index_name, body=index_schema, ignore=400)
 
 
 def generate_actions(movies):
@@ -85,18 +46,53 @@ def generate_actions(movies):
         yield movie
 
 
-def main():
-    print('Loading data from database...')
-    conn, cursor = get_db_connection_and_cursor(DB_PATH)
-    initial_movies = get_initial_movies_list(cursor)
-    processed_movies = process_movies(cursor, initial_movies)
-    conn.close()
+def extract(db_path):
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
 
+    cursor.execute("""
+        SELECT id, imdb_rating, genre, title, plot as description, director, writer, writers
+        FROM movies""")
+    movies = [dict(movie) for movie in cursor.fetchall()]
+
+    cursor.execute('SELECT id, name FROM writers')
+    writers = [dict(writer) for writer in cursor.fetchall()]
+
+    cursor.execute("""
+        SELECT a.id, a.name, m_a.movie_id
+        FROM actors a
+        INNER JOIN movie_actors m_a ON a.id = m_a.actor_id""")
+    actors = [dict(actor) for actor in cursor.fetchall()]
+
+    conn.close()
+    return movies, writers, actors
+
+
+def transform(movies, writers, actors):
+    for movie in movies:
+        edit_writers_in_movie(movie, writers)
+        add_actors_to_movie(movie, actors)
+        try:
+            movie['imdb_rating'] = float(movie['imdb_rating'])
+        except ValueError:
+            del movie['imdb_rating']
+
+    return movies
+
+
+def load(movies, index_schema_path, index_name):
     client = Elasticsearch()
-    print(f'Creating "{INDEX_NAME}" index if it does not exist...')
-    create_index(client, INDEX_SCHEMA_PATH, INDEX_NAME)
-    print("Indexing documents...")
-    result = bulk(client, index=INDEX_NAME, actions=generate_actions(processed_movies))
+    with open(index_schema_path, 'r') as f:
+        client.indices.create(index=index_name, body=f.read(), ignore=400)
+
+    return bulk(client, index=INDEX_NAME, actions=generate_actions(movies))
+
+
+def main():
+    movies, writers, actors = extract(DB_PATH)
+    transformed_movies = transform(movies, writers, actors)
+    result = load(transformed_movies, INDEX_SCHEMA_PATH, INDEX_NAME)
     print(f'Successfully indexed {result[0]} documents, {len(result[1])} errors')
 
 
