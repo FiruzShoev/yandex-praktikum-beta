@@ -69,6 +69,12 @@ def process_movies(cursor, movies):
         except ValueError:
             del movie['imdb_rating']
 
+        if movie['genre']:
+            movie['genre'] = movie['genre'].split(', ')
+
+        if movie['director']:
+            movie['director'] = movie['director'].split(', ')
+
     return movies
 
 
