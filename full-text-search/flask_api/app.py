@@ -22,7 +22,7 @@ def movie_by_id(movie_id):
 
 @app.route('/api/v1/movies/')
 @app.route('/api/v1/movies')
-def movie_by_query():
+def movies_by_query():
     search = request.args.get('search')
     limit = request.args.get('limit')
     page = request.args.get('page')

@@ -17,3 +17,5 @@ def validate_param_is_positive_int(param):
 def validate_param_is_allowed(param, allowed_values):
     if param not in allowed_values:
         abort(*BAD_REQUEST_BODY)
+
+    return param
